@@ -1,0 +1,60 @@
+schemaVersion: '0.3'
+description: Remediate public SSH ingress on a Security Group.
+assumeRole: '{{ AutomationAssumeRole }}'
+parameters:
+  AutomationAssumeRole:
+    type: String
+    description: Role for Automation to assume.
+  SecurityGroupId:
+    type: String
+    description: Security Group ID
+  Port:
+    type: String
+    default: '22'
+  Cidr:
+    type: String
+    default: '0.0.0.0/0'
+  TopicArn:
+    type: String
+    default: ''
+mainSteps:
+- name: RevokeIfPresent
+  action: aws:executeScript
+  inputs:
+    Runtime: python3.8
+    Handler: handler
+    Script: |
+      import boto3
+      def handler(event, _):
+          ec2 = boto3.client('ec2')
+          sg = event['SecurityGroupId']
+          port = int(event.get('Port', '22'))
+          cidr = event.get('Cidr','0.0.0.0/0')
+          desc = ec2.describe_security_groups(GroupIds=[sg])['SecurityGroups'][0]
+          to_revoke=[]
+          for p in desc.get('IpPermissions', []):
+              if p.get('IpProtocol') in ('tcp','-1') and p.get('FromPort',port)==port and p.get('ToPort',port)==port:
+                  if any(r.get('CidrIp')==cidr for r in p.get('IpRanges',[])):
+                      to_revoke.append({
+                        'IpProtocol':'tcp','FromPort':port,'ToPort':port,
+                        'IpRanges':[{'CidrIp':cidr}]
+                      })
+          if to_revoke:
+              ec2.revoke_security_group_ingress(GroupId=sg, IpPermissions=to_revoke)
+              return {"changed": True}
+          return {"changed": False}
+    InputPayload:
+      SecurityGroupId: '{{SecurityGroupId}}'
+      Port: '{{Port}}'
+      Cidr: '{{Cidr}}'
+- name: Notify
+  action: aws:executeAwsApi
+  onFailure: Continue
+  inputs:
+    Service: sns
+    Api: Publish
+    TopicArn: '{{TopicArn}}'
+    Message: 'Revoked public SSH ingress on {{SecurityGroupId}}'
+- name: Done
+  action: aws:sleep
+  inputs: {Duration: PT1S}

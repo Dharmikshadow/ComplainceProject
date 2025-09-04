@@ -1,0 +1,30 @@
+schemaVersion: '0.3'
+description: Enable default SSE-S3 encryption on an S3 bucket.
+assumeRole: '{{ AutomationAssumeRole }}'
+parameters:
+  AutomationAssumeRole:
+    type: String
+  BucketName:
+    type: String
+  TopicArn:
+    type: String
+    default: ''
+mainSteps:
+- name: PutEncryption
+  action: aws:executeAwsApi
+  inputs:
+    Service: s3
+    Api: PutBucketEncryption
+    Bucket: '{{BucketName}}'
+    ServerSideEncryptionConfiguration:
+      Rules:
+        - ApplyServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+- name: Notify
+  action: aws:executeAwsApi
+  onFailure: Continue
+  inputs:
+    Service: sns
+    Api: Publish
+    TopicArn: '{{TopicArn}}'
+    Message: 'Enabled SSE-S3 default encryption on {{BucketName}}'

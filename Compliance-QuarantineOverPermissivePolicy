@@ -1,0 +1,40 @@
+schemaVersion: '0.3'
+description: Quarantine an over-permissive IAM policy by detaching from all entities (requires approval).
+assumeRole: '{{ AutomationAssumeRole }}'
+parameters:
+  AutomationAssumeRole: { type: String }
+  PolicyArn: { type: String }
+  TopicArn: { type: String, default: '' }
+mainSteps:
+- name: Approve
+  action: aws:approve
+  inputs:
+    Message: 'Detach {{PolicyArn}} from all users/roles/groups?'
+    MinRequiredApprovals: 1
+- name: DetachEverywhere
+  action: aws:executeScript
+  inputs:
+    Runtime: python3.8
+    Handler: handler
+    Script: |
+      import boto3
+      def handler(event, _):
+          iam = boto3.client('iam')
+          arn = event['PolicyArn']
+          ents = iam.list_entities_for_policy(PolicyArn=arn, EntityFilter='All')
+          detached = []
+          for u in ents.get('PolicyUsers', []):
+              iam.detach_user_policy(UserName=u['UserName'], PolicyArn=arn); detached.append(f"user:{u['UserName']}")
+          for r in ents.get('PolicyRoles', []):
+              iam.detach_role_policy(RoleName=r['RoleName'], PolicyArn=arn); detached.append(f"role:{r['RoleName']}")
+          for g in ents.get('PolicyGroups', []):
+              iam.detach_group_policy(GroupName=g['GroupName'], PolicyArn=arn); detached.append(f"group:{g['GroupName']}")
+          return {"detached": detached}
+- name: Notify
+  action: aws:executeAwsApi
+  onFailure: Continue
+  inputs:
+    Service: sns
+    Api: Publish
+    TopicArn: '{{TopicArn}}'
+    Message: 'Quarantined over-permissive policy {{PolicyArn}} (detached from all entities)'

@@ -1,0 +1,37 @@
+schemaVersion: '0.3'
+description: Ensure at least one multi-region CloudTrail is logging; create or start if needed.
+assumeRole: '{{ AutomationAssumeRole }}'
+parameters:
+  AutomationAssumeRole: { type: String }
+  TrailName: { type: String, default: 'org-baseline-trail' }
+  TrailBucket: { type: String }   # your CloudTrail bucket name
+  TopicArn: { type: String, default: '' }
+mainSteps:
+- name: EnsureLogging
+  action: aws:executeScript
+  inputs:
+    Runtime: python3.8
+    Handler: handler
+    Script: |
+      import boto3
+      def handler(event, _):
+          ct = boto3.client('cloudtrail')
+          s3_bucket = event['TrailBucket']
+          trail_name = event.get('TrailName','org-baseline-trail')
+          trails = ct.describe_trails(includeShadowTrails=False)['trailList']
+          target = next((t for t in trails if t['Name']==trail_name), None)
+          if not target:
+              ct.create_trail(Name=trail_name, S3BucketName=s3_bucket, IsMultiRegionTrail=True, IncludeGlobalServiceEvents=True)
+          status = ct.get_trail_status(Name=trail_name)
+          if not status.get('IsLogging'):
+              ct.start_logging(Name=trail_name)
+              return {'changed': True, 'action':'started'}
+          return {'changed': False, 'action':'already-logging'}
+- name: Notify
+  action: aws:executeAwsApi
+  onFailure: Continue
+  inputs:
+    Service: sns
+    Api: Publish
+    TopicArn: '{{TopicArn}}'
+    Message: 'Ensured CloudTrail logging is enabled'

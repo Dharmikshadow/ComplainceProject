@@ -1,0 +1,38 @@
+schemaVersion: '0.3'
+description: Ensure EC2 instance has required tags; create any missing.
+assumeRole: '{{ AutomationAssumeRole }}'
+parameters:
+  AutomationAssumeRole: { type: String }
+  InstanceId: { type: String }
+  RequiredTagsJson:
+    type: String
+    description: JSON like {"Owner":"secops","Environment":"prod"}
+  TopicArn: { type: String, default: '' }
+mainSteps:
+- name: TagInstance
+  action: aws:executeScript
+  inputs:
+    Runtime: python3.8
+    Handler: handler
+    Script: |
+      import boto3, json
+      def handler(event, _):
+          ec2 = boto3.client('ec2')
+          iid = event['InstanceId']
+          required = json.loads(event['RequiredTagsJson'])
+          # Fetch current
+          desc = ec2.describe_instances(InstanceIds=[iid])['Reservations'][0]['Instances'][0]
+          existing = {t['Key']: t['Value'] for t in desc.get('Tags', [])}
+          missing = [{ 'Key':k, 'Value':v } for k,v in required.items() if existing.get(k) != v]
+          if missing:
+              ec2.create_tags(Resources=[iid], Tags=missing)
+              return {"changed": True, "added": missing}
+          return {"changed": False, "added": []}
+- name: Notify
+  action: aws:executeAwsApi
+  onFailure: Continue
+  inputs:
+    Service: sns
+    Api: Publish
+    TopicArn: '{{TopicArn}}'
+    Message: 'Ensured required tags on {{InstanceId}}'
